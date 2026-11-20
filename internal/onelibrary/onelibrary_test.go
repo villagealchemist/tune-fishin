@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ import (
 )
 
 func TestDecodePreservesPlaylistOccurrences(t *testing.T) {
-	got, err := decode([]byte(`{"name":"Set"}
+	got, err := decode(strings.NewReader(`{"name":"Set"}
 {"position":1,"path":"/Contents/a.aif","title":"Opener"}
 {"position":2,"path":"/Contents/a.aif","title":"Opener"}
 {"name":"Set"}
@@ -42,7 +43,7 @@ func TestRejectIncompleteProtocol(t *testing.T) {
 		"{\"name\":\"X\"}\n{\"position\":1,\"path\":\"a\"}\n{\"position\":1,\"path\":\"b\"}",
 		"{\"done\":true}\n{}",
 	} {
-		if _, err := decode([]byte(input)); err == nil {
+		if _, err := decode(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted %q", input)
 		}
 	}
@@ -91,15 +92,31 @@ func TestSnapshotRejectsChangedSource(t *testing.T) {
 	}
 }
 
-func TestOutputLimitCancelsReader(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	out := &boundedOutput{limit: 8, cancel: cancel}
-	if _, err := io.Copy(out, strings.NewReader("too large")); err == nil || !out.exceeded || !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatal(err, out.exceeded, ctx.Err())
+func TestReaderRejectsOversizedRecord(t *testing.T) {
+	if _, err := decode(strings.NewReader(strings.Repeat("x", maxRecord+1))); err == nil || !strings.Contains(err.Error(), "1 MiB") {
+		t.Fatalf("expected oversized record failure, got %v", err)
 	}
-	if out.buf.Len() > out.limit {
-		t.Fatal("oversized result was retained")
+}
+
+func TestProcessErrorAndEarlyCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell stand-ins for the optional interpreter")
+	}
+	dir := t.TempDir()
+	fakePython := filepath.Join(dir, "fake-python")
+	if err := os.WriteFile(fakePython, []byte("#!/bin/sh\nexit 20\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runAdapter(context.Background(), fakePython, dir); !errors.Is(err, errReader) {
+		t.Fatalf("missing dependency should surface even after empty stdout: %v", err)
+	}
+	if err := os.WriteFile(fakePython, []byte("#!/bin/sh\nprintf 'malformed\\n'\nexec sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := runAdapter(ctx, fakePython, dir); err == nil || !strings.Contains(err.Error(), "invalid output") || ctx.Err() != nil {
+		t.Fatalf("malformed output should cancel and reap the child: %v", err)
 	}
 }
 

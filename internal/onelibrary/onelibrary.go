@@ -25,8 +25,7 @@ import (
 //go:embed adapter.py
 var adapter string
 
-const maxDatabase = 1 << 30
-const maxOutput = 128 << 20
+const maxRecord = 1 << 20
 
 var errChanged = errors.New("OneLibrary changed during the check; finish exporting and retry")
 var errReader = errors.New("direct OneLibrary checks need Python 3.11+ with pyrekordbox==0.5.0 and sqlcipher3-wheels; set TUNA_PYTHON to that interpreter or supply a fresh device playlist snapshot")
@@ -100,9 +99,6 @@ func checkSource(filename string) (os.FileInfo, error) {
 	}
 	if !info.Mode().IsRegular() || info.Size() == 0 {
 		return nil, errors.New("OneLibrary database is empty or is not a regular file")
-	}
-	if info.Size() > maxDatabase {
-		return nil, errors.New("OneLibrary database exceeds the 1 GiB snapshot limit; supply a fresh device playlist snapshot")
 	}
 	return info, nil
 }
@@ -211,55 +207,46 @@ func readStable(ctx context.Context, filename string, expected os.FileInfo, dst 
 	return nil
 }
 
-// boundedOutput cancels the reader immediately if a corrupt device produces excessive output.
-type boundedOutput struct {
-	buf      bytes.Buffer
-	limit    int
-	cancel   context.CancelFunc
-	exceeded bool
-}
-
-func (b *boundedOutput) Write(p []byte) (int, error) {
-	if len(p) > b.limit-b.buf.Len() {
-		b.exceeded = true
-		b.cancel()
-		return 0, errors.New("OneLibrary reader output exceeds its limit")
-	}
-	return b.buf.Write(p)
-}
-
 func runAdapter(ctx context.Context, python, dir string) ([]library.Playlist, error) {
-	child, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	child, cancel := context.WithCancel(ctx)
 	defer cancel()
-	output := &boundedOutput{limit: maxOutput, cancel: cancel}
 	cmd := exec.CommandContext(child, python, "-B", "-c", adapter)
 	cmd.Dir = dir
-	cmd.Stdout = output
 	cmd.WaitDelay = 2 * time.Second
-	err := cmd.Run()
+
+	// Close the read side on a malformed record so the writer can exit, even
+	// when it has already filled its stdout pipe. Always wait for the process.
+	stream, output := io.Pipe()
+	cmd.Stdout = output
+	finished := make(chan error, 1)
+	go func() {
+		err := cmd.Run()
+		output.Close()
+		finished <- err
+	}()
+	playlists, parseErr := decode(stream)
+	stream.Close()
+	if parseErr != nil {
+		cancel()
+	}
+	err := <-finished
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if output.exceeded {
-		return nil, errors.New("OneLibrary reader output exceeds 128 MiB; supply a fresh device playlist snapshot")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 20 {
+		return nil, errReader
 	}
-	if errors.Is(child.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("OneLibrary reader timed out; supply a fresh device playlist snapshot: %w", child.Err())
-	}
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 20 {
-			return nil, errReader
-		}
+	if err != nil && (parseErr == nil || errors.Is(parseErr, io.ErrUnexpectedEOF)) {
 		return nil, errors.New("the optional OneLibrary reader could not read this export; check the on-device playlist in rekordbox or supply a fresh device playlist snapshot")
 	}
-	return decode(output.buf.Bytes())
+	return playlists, parseErr
 }
 
-func decode(data []byte) ([]library.Playlist, error) {
+func decode(stream io.Reader) ([]library.Playlist, error) {
 	var playlists []library.Playlist
-	rows := bufio.NewScanner(bytes.NewReader(data))
-	rows.Buffer(make([]byte, 4096), 1<<20)
+	rows := bufio.NewScanner(stream)
+	rows.Buffer(make([]byte, 4096), maxRecord)
 	var previous int64 = -1
 	done := false
 	for rows.Scan() {
@@ -295,8 +282,11 @@ func decode(data []byte) ([]library.Playlist, error) {
 			previous = *row.Position
 		}
 	}
-	if err := rows.Err(); err != nil || !done {
-		return nil, errors.New("incomplete or oversized record from the OneLibrary reader")
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("OneLibrary reader record exceeds 1 MiB or could not be read: %w", err)
+	}
+	if !done {
+		return nil, fmt.Errorf("incomplete output from the OneLibrary reader: %w", io.ErrUnexpectedEOF)
 	}
 	return playlists, nil
 }
