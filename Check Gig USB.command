@@ -1,10 +1,12 @@
 #!/bin/sh
 cd "$(dirname "$0")" || exit 1
-python3 gig_usb/tuna.py
-status=$?
-if [ "$status" -ne 0 ]; then
-  echo "Use Python 3.10 or newer with Tkinter to open the Tune Fishin window."
-  printf 'Press Return to close. '
-  read -r reply
+if [ -x ./tuna ]; then
+  exec ./tuna
 fi
-exit "$status"
+if command -v go >/dev/null 2>&1; then
+  exec go run ./cmd/tuna
+fi
+echo "Place the macOS tuna binary next to this launcher, or install Go 1.23 or later to run from source."
+printf 'Press Return to close. '
+read -r reply
+exit 2

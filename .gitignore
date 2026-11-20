@@ -208,3 +208,7 @@ __marimo__/
 
 # Architecture documentation (internal planning)
 .architecture/
+
+# Local Go builds of the USB checker
+/tuna
+/tuna.exe

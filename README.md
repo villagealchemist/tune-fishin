@@ -11,52 +11,73 @@ TUNA eFISHIN't is that transmutation made tangible — a spark born from a slip 
 
 ## 🎧 Check my gig USB
 
-Check the stick you plan to take to the venue. Tune Fishin reads the exported playlist for the deck you select, compares its order with your intended set, and checks the audio files on the stick against your originals. It reads the filesystem format where the OS exposes it. Everything runs on your computer.
+Tune Fishin reads a set back from the stick you will take to the venue. It checks the playlist in the library used by your selected deck, compares the actual audio files byte for byte with your originals, and checks the mounted volume's filesystem. It runs locally and reads the USB without writing to it.
 
-1. In rekordbox, right-click your intended playlist under **Playlists**. Choose **Export a playlist to a file** and save it as **M3U8** on your computer. Keep the original music drive connected.
-2. Export the set to your gig USB in rekordbox as usual. Wait for the export to finish, eject the USB, and reconnect it.
-3. With Python 3.10+ and Tkinter installed, open **Check Gig USB.command** on macOS, or run `python3 gig_usb/tuna.py` from the project folder. Pick the venue deck, your intended M3U8, and the **root** of the USB. Click **Check USB**. If you renamed the M3U8, enter the actual USB playlist name under the extra options.
+### Run the checker
 
-**What the result means**
+From this branch, build once with Go 1.23 or later. The binary runs on its own for the standard Device Library workflow.
 
-- **MATCH** means the selected deck library contains the same audio files in the same order (including repeats), and the filesystem check passed. This checks playlist data and file bytes. Playback, codec compatibility, partition layout, cues, and beatgrids require separate checks.
-- **DIFFERENCES** identifies a missing playlist, omitted or unexpected tracks, order changes, or a known filesystem incompatibility. For omitted tracks the checker looks for identical audio elsewhere on the stick. A different edit, a transcode, or new embedded tags change the file fingerprint.
-- **INCOMPLETE** identifies anything the checker could not verify, such as an unavailable original, an unreadable file, or an unknown filesystem. A backup folder can be used to inspect playlist content. Select the mounted volume to check its format.
+```bash
+go build -o tuna ./cmd/tuna
+./tuna
+```
 
-**Deck support**
+On macOS you can also double-click **Check Gig USB.command** beside the binary. On Windows build with `go build -o tuna.exe ./cmd/tuna` and open `tuna.exe`. Linux uses Zenity for graphical dialogs. The terminal command works on all three platforms.
 
-| Deck | USB library checked |
+1. In rekordbox, right-click the intended set under **Playlists**, choose **Export a playlist to a file**, and save a local **M3U8**. Keep the original music accessible.
+2. Export the set to the USB in rekordbox. After export completes, eject the stick and reconnect it.
+3. Open Tune Fishin, pick the venue deck, the intended M3U8, and the root of the USB. Confirm the playlist name as it appears on the device.
+
+```bash
+./tuna check --set ~/Music/Friday.m3u8 --usb "/Volumes/GIG USB" --deck CDJ-2000NXS2
+```
+
+If the set has a different name on the device, add `--playlist "Friday closer"`. Use `tuna check --help` for the full list of models.
+
+| Result | What the checker established |
 | --- | --- |
-| CDJ-2000NXS2, XDJ-XZ, XDJ-RX3, CDJ-3000 | Device Library |
-| CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO | OneLibrary |
-| CDJ-3000 specifically running withdrawn firmware 3.30 | Choose the separate 3.30 option to check OneLibrary |
+| MATCH · exit 0 | The selected deck library lists the same files in the same order, including repeats, the audio bytes match, and the USB filesystem check passed. |
+| DIFFERENCES · exit 1 | The checker found a missing library or playlist, a track or order difference, or a known filesystem incompatibility. If a track is missing from the playlist, it also looks on the USB for a byte-identical copy. |
+| INCOMPLETE · exit 2 | Evidence was unavailable, such as an unreadable original, an unknown filesystem, or a match established only from a playlist snapshot. Backup folders can be used to inspect set contents. |
 
-Device Library checks use Python's standard library. Direct OneLibrary checks also need Python 3.11+ and the optional reader in the Python environment used to launch the app.
+A transcode or tag edit changes a file's SHA-256. A match covers file contents, set order, and filesystem format. Playback on the deck, codec support, partition layout, cues, and beatgrids need separate checks.
+
+### Deck libraries
+
+| Model | Library read from the USB |
+| --- | --- |
+| CDJ-2000NXS2, XDJ-XZ, XDJ-RX3, CDJ-3000 | Device Library (`export.pdb`) |
+| CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO | OneLibrary (`exportLibrary.db`) |
+| CDJ-3000 running withdrawn firmware 3.30 | Select **CDJ-3000 (firmware 3.30)** to check OneLibrary |
+
+The Device Library reader is native Go. Direct inspection of an encrypted OneLibrary export is the one workflow that uses Python. The optional adapter runs against a private copy of the database. To enable it, create a Python 3.11+ virtual environment on your computer, install the reader, and point `TUNA_PYTHON` at that interpreter. For example, on macOS or Linux:
 
 ```bash
-python3 -m pip install 'pyrekordbox==0.5.0' sqlcipher3-wheels
+python3 -m venv ~/.venvs/tuna-onelibrary
+~/.venvs/tuna-onelibrary/bin/python -m pip install 'pyrekordbox==0.5.0' sqlcipher3-wheels
+export TUNA_PYTHON="$HOME/.venvs/tuna-onelibrary/bin/python"
+./tuna
 ```
 
-If the reader is unavailable, open **Devices → your USB → OneLibrary → Playlists** in rekordbox and export the **device** playlist as a fresh M3U8. Select it under the checker's extra options. The snapshot must reference audio on the mounted stick. Its results are labeled separately because it captures the playlist at the time of export.
+Alternatively, export a fresh device M3U8 from **Devices → your USB → OneLibrary → Playlists** in rekordbox and supply it through the dialogs or `--snapshot path/to/device.m3u8`. The entries must resolve to audio on the selected USB. The checker tries the live library first and identifies snapshot evidence explicitly.
 
-**Terminal usage**
+### Follow the code
 
-```bash
-python3 gig_usb/tuna.py check --set ~/Music/Friday.m3u8 --usb "/Volumes/GIG USB" --deck CDJ-2000NXS2
-```
+- `cmd/tuna` and `internal/ui` take the same inputs and call `preflight.Run`.
+- `internal/legacy` reads little-endian pages from `export.pdb` using Go's `io.ReaderAt`. `internal/onelibrary` runs the optional reader on a temporary copy. Both return ordered `library.Playlist` records.
+- `internal/preflight` resolves device paths, streams SHA-256 hashes, and compares track occurrences in order. `internal/volume` asks the host OS about the mounted device.
 
-Use `--playlist "Friday closer"` if the USB playlist has a different name. Use `--snapshot path/to/device.m3u8` for the snapshot fallback. Exit codes are `0` for a match, `1` for differences, and `2` for an incomplete check. Run the test suite with `python3 -m unittest discover -s gig_usb`.
+Run `go test ./...` from the repository root.
 
-[rekordbox USB compatibility](https://rekordbox.com/en/support/usb-export/) · [AlphaTheta firmware notice](https://alphatheta.com/en/information/important-notice-for-customers-using-usb-devices-with-our-dj-equipment/)
+[rekordbox USB compatibility](https://rekordbox.com/en/support/usb-export/) · [AlphaTheta firmware notice](https://alphatheta.com/en/information/important-notice-for-customers-using-usb-devices-with-our-dj-equipment/) · [Device Library page format](https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/exports.html)
 
 ---
 
-## ⚗️ What This Actually Does
+## ⚗️ The original extraction roadmap
 
-**TUNA eFISHIN't extracts clean audio from videos.** That's it. No sketchy sites, no quality loss, no hunting through ad mazes.
+**The original idea for TUNA eFISHIN't was to extract clean audio from videos.** No sketchy sites, no quality loss, no hunting through ad mazes.
 
-**Current reality:** CLI tool + browser extension  
-**Coming soon:** Desktop apps + mobile magic
+The commands, extension, and distribution channels below describe the original plan. The gig USB checker above is implemented on this branch.
 
 **`video file` → `clean .mp3` → `your DJ library`**
 
@@ -64,14 +85,14 @@ Use `--playlist "Friday closer"` if the USB playlist has a different name. Use `
 
 ## 🔱 The Fleet (v1.0 → Future)
 
-### 🖥️ CLI (Available Now)
+### 🖥️ CLI (Planned)
 ```bash
 tuna extract video.mp4               # Single track extraction
 tuna batch /folder/                  # Batch processing  
 tuna range video.mp4 1:30 4:45      # Precise time ranges
 ```
 
-### 🌐 Browser Extension (Available Now)
+### 🌐 Browser Extension (Planned)
 Right-click any YouTube/SoundCloud/TikTok video → instant MP3 download
 
 ### 💻 Desktop Apps (Soon)
@@ -87,7 +108,7 @@ Screen record from any app → auto-extract audio → sync to your library
 
 ---
 
-## 🧪 Installation
+## 🧪 Planned distribution for the extraction tools
 
 **CLI:**
 ```bash

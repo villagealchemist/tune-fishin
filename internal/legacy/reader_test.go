@@ -1,6 +1,7 @@
 package legacy
 
 import (
+	"context"
 	"encoding/binary"
 	"os"
 	"path/filepath"
@@ -86,7 +87,7 @@ func fixturePath(t *testing.T, data []byte) string {
 }
 
 func TestReadPreservesOrderAndRepeats(t *testing.T) {
-	got, err := Read(fixturePath(t, fixture()))
+	got, err := Read(context.Background(), fixturePath(t, fixture()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestReadRejectsInconsistentLibrary(t *testing.T) {
 		{"invalid row start", func(b []byte) []byte { order.PutUint16(b[testPageSize*2-6:], 65535); return b }, "row bounds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Read(fixturePath(t, tc.mutate(fixture()))); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := Read(context.Background(), fixturePath(t, tc.mutate(fixture()))); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want error containing %q, got %v", tc.want, err)
 			}
 		})

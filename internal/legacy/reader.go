@@ -3,6 +3,7 @@
 package legacy
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -70,11 +71,14 @@ func readHeader(data io.ReaderAt, size int64) (*database, error) {
 	return db, nil
 }
 
-func (db *database) readTable(kind uint32, visit func([]byte) error) error {
+func (db *database) readTable(ctx context.Context, kind uint32, visit func([]byte) error) error {
 	t := db.tables[kind]
 	seen := make(map[uint32]bool)
 	page := make([]byte, db.pageSize)
 	for index := t.first; ; index = le.Uint32(page[12:16]) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if index == 0 || int64(index) >= db.pageCount || seen[index] {
 			return fmt.Errorf("broken page chain at page %d in Device Library table %d", index, kind)
 		}
@@ -184,7 +188,10 @@ type positionedEntry struct {
 
 // Read returns playlists in tree-row order and their tracks in set order.
 // Playlists sharing a name and tracks repeated in one playlist stay distinct.
-func Read(path string) ([]library.Playlist, error) {
+func Read(ctx context.Context, path string) ([]library.Playlist, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -199,7 +206,7 @@ func Read(path string) ([]library.Playlist, error) {
 		return nil, err
 	}
 	tracks := make(map[uint32]library.Entry)
-	err = db.readTable(tracksTable, func(row []byte) error {
+	err = db.readTable(ctx, tracksTable, func(row []byte) error {
 		if len(row) < trackHeader || le.Uint16(row) != 0x24 {
 			return errors.New("unsupported track record layout")
 		}
@@ -229,7 +236,7 @@ func Read(path string) ([]library.Playlist, error) {
 
 	var result []library.Playlist
 	indices := make(map[uint32]int)
-	err = db.readTable(playlistTable, func(row []byte) error {
+	err = db.readTable(ctx, playlistTable, func(row []byte) error {
 		if len(row) < 21 {
 			return errors.New("incomplete playlist row")
 		}
@@ -252,7 +259,7 @@ func Read(path string) ([]library.Playlist, error) {
 		return nil, err
 	}
 	byPlaylist := make([][]positionedEntry, len(result))
-	err = db.readTable(entriesTable, func(row []byte) error {
+	err = db.readTable(ctx, entriesTable, func(row []byte) error {
 		if len(row) < 12 {
 			return errors.New("incomplete playlist entry")
 		}
@@ -272,6 +279,9 @@ func Read(path string) ([]library.Playlist, error) {
 		return nil, err
 	}
 	for i, entries := range byPlaylist {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].position < entries[j].position })
 		for j, item := range entries {
 			if j > 0 && entries[j-1].position == item.position {
