@@ -63,6 +63,8 @@ Alternatively, export a fresh device M3U8 from **Devices → your USB → OneLib
 
 ### Follow the code
 
+[DJ software, hardware and the export formats between them](docs/dj-stack.md) maps the vendor stacks and follows a track through the Go processor.
+
 - `cmd/tuna` and `internal/ui` take the same inputs and call `preflight.Run`.
 - `internal/legacy` reads little-endian pages from `export.pdb` using Go's `io.ReaderAt`. `internal/onelibrary` runs the optional reader on a temporary copy. Both return ordered `library.Playlist` records.
 - `internal/preflight` resolves device paths, streams SHA-256 hashes, and compares track occurrences in order. `internal/volume` asks the host OS about the mounted device.
